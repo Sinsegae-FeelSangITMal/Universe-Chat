@@ -2,7 +2,10 @@
 package com.sinse.chat.chat;
 
 import com.hankcs.algorithm.AhoCorasickDoubleArrayTrie;
+import com.sinse.chat.domain.ChatModeration;
+import com.sinse.chat.repository.ChatModerationRepository;
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import org.jsoup.Jsoup;
 import org.springframework.stereotype.Service;
 
@@ -14,8 +17,10 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 @Service
+@RequiredArgsConstructor
 public class ChatModerationService {
 
+    private final ChatModerationRepository moderationRepository;
     private volatile AhoCorasickDoubleArrayTrie<String> trie;
     private final List<String> baseTerms = new ArrayList<>();
 
@@ -51,6 +56,10 @@ public class ChatModerationService {
         trie.build(dict);   // 여기서 바로 build(dict) 호출
     }
 
+    public boolean isBanned(int roomId, int userId) {
+        return moderationRepository.existsById_RoomIdAndId_UserIdAndId_Type(roomId, userId, ChatModeration.ModerationType.BAN);
+    }
+
     /** 메시지 정화/차단 결과 */
     public ModerationResult moderate(String raw) {
         if (raw == null || raw.isBlank())
@@ -71,7 +80,8 @@ public class ChatModerationService {
         // 4) 치환 (원문에서 위치 찾기 대신 간단히 전체 단어 마스킹)
         String masked = maskByDictionary(cleanedHtml);
 
-        return ModerationResult.allowed(masked); // 또는 blocked로 정책 결정
+        // 욕설이 감지되었으므로, 마스킹된 내용을 포함하되 allowed는 false로 반환
+        return new ModerationResult(false, masked, "PROFANITY_DETECTED");
     }
 
     // ==================== 유틸 ====================

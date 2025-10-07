@@ -1,32 +1,33 @@
 
 package com.sinse.chat.controller;
 
-import com.sinse.chat.chat.ChatModerationService;
 import com.sinse.chat.dto.request.ChatMessageRequest;
 import com.sinse.chat.dto.response.ChatMessageResponse;
 import com.sinse.chat.security.UserPrincipal;
 import com.sinse.chat.service.ChatService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
 import org.springframework.messaging.MessagingException;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.SendTo;
-import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
-import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.security.Principal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static com.sinse.chat.domain.ChatMessage.ContentType.TEXT;
 
 @Slf4j
-@Controller
+@RestController
 @RequiredArgsConstructor
 public class ChatController {
 
-    private final ChatModerationService moderation;
-    private final ChatService chatService;
+    private final ChatService chatService; // Only dependency needed
 
     @MessageMapping("/live/{roomId}")
     @SendTo("/topic/public/{roomId}")
@@ -44,14 +45,17 @@ public class ChatController {
         String nickname = up.getNickname();
         String role     = up.getRoleName();
 
-        var result = moderation.moderate(msg.content());
-        if (!result.allowed()) throw new MessagingException("CONTENT_BLOCKED");
-
+        // Interceptor handles moderation. Controller just saves and broadcasts.
         var out = new ChatMessageResponse(
-                roomId, senderId, nickname, role, result.cleaned(), TEXT, LocalDateTime.now()
+                roomId, senderId, nickname, role, msg.content(), TEXT, LocalDateTime.now()
         );
-        chatService.saveMessage(out);
+        chatService.saveMessage(out); // Saves to Redis
         return out;
     }
 
+    @GetMapping("/chatapi/rooms/{roomId}/messages")
+    public ResponseEntity<List<Object>> getRecentMessages(@PathVariable Long roomId) {
+        List<Object> messages = chatService.getRecentMessages(roomId.intValue(), 10);
+        return ResponseEntity.ok(messages);
+    }
 }
