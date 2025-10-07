@@ -109,18 +109,32 @@ public class ChatPreFilterInterceptor implements ChannelInterceptor {
 
             // mute 체크
             if (Boolean.TRUE.equals(redisTemplate.hasKey("MUTE:" + roomId + ":" + userId))) {
-                throw new MessagingException("MUTED");
+                // Mute 상태이면 메시지를 조용히 무시 (연결은 유지)
+                return null;
             }
 
-            if (!rateLimiter.allow(userId)) throw new MessagingException("RATE_LIMITED");
+            if (!rateLimiter.allow(userId)) {
+                handleOffense(roomId, userId, up.getNickname(), "지나치게 빠른 채팅 입력");
+                // Rate-limited messages are always dropped, without disconnecting the client.
+                return null;
+            }
 
             String raw  = new String((byte[]) message.getPayload(), java.nio.charset.StandardCharsets.UTF_8);
+            log.debug("raw : " + raw);
             String safe = sanitizer.clean(raw);
             var result  = moderationService.moderate(safe);
 
+            log.debug("result  : " + result);
+
             if (!result.allowed()) {
-                handleOffense(roomId, userId, up.getNickname());
-                throw new MessagingException("BLOCKED_CONTENT");
+                Long offenseCount = handleOffense(roomId, userId, up.getNickname(), "부적절한 언어 사용");
+                // 3회 이상 위반(Ban) 시에만 메시지 전송을 완전히 차단
+                if (offenseCount >= 3) {
+                    // Ban 상태이면 메시지를 조용히 무시 (연결은 유지)
+                    return null;
+                }
+                // Mute의 경우, 경고 메시지는 handleOffense 내부에서 개인적으로 발송되고,
+                // 마스킹된 메시지는 아래의 로직을 통해 채팅방으로 전송됨
             }
 
             // ✅ SEND도 mutable 열고, 정제된 페이로드로 교체
@@ -139,7 +153,7 @@ public class ChatPreFilterInterceptor implements ChannelInterceptor {
         return i >= 0 ? dest.substring(i + 1) : null;
     }
 
-    private void handleOffense(String roomId, String userId, String nickname) {
+    private Long handleOffense(String roomId, String userId, String nickname, String reason) {
         String offenseKey = OFFENSE_KEY_PREFIX + roomId + ":" + userId;
         Long offenseCount = redisTemplate.opsForValue().increment(offenseKey);
 
@@ -151,18 +165,24 @@ public class ChatPreFilterInterceptor implements ChannelInterceptor {
             ChatModeration.ChatModerationId banId = new ChatModeration.ChatModerationId(Long.parseLong(roomId), Long.parseLong(userId), ChatModeration.ModerationType.BAN);
             ChatModeration ban = new ChatModeration(banId, "Exceeded offense limit", null, LocalDateTime.now());
             moderationRepository.save(ban);
-            messagingTemplate.convertAndSendToUser(userId, "/queue/system", "You have been banned from this chat.");
+            // JSON 형식으로 시스템 메시지 전송
+            String banMessage = String.format("{\"code\": \"BANNED\", \"message\": \"%s\"}", "채팅방 사용이 차단되었습니다. 메인 페이지로 이동합니다.");
+            messagingTemplate.convertAndSend(String.format("/queue/system-%s", userId), banMessage);
         } else {
             // Apply Mute
-            log.warn("User {} in room {} has been muted for 30 seconds (offense #{})", nickname, roomId, offenseCount);
+            log.warn("User {} in room {} has been muted for 30 seconds (offense #{}) for reason: {}", nickname, roomId, offenseCount, reason);
             String muteKey = MUTE_KEY_PREFIX + roomId + ":" + userId;
             redisTemplate.opsForValue().set(muteKey, "true", 30, TimeUnit.SECONDS);
             // Save mute record to DB as well for tracking
             ChatModeration.ChatModerationId muteId = new ChatModeration.ChatModerationId(Long.parseLong(roomId), Long.parseLong(userId), ChatModeration.ModerationType.MUTE);
-            ChatModeration mute = new ChatModeration(muteId, "Inappropriate language", LocalDateTime.now().plusSeconds(30), LocalDateTime.now());
+            ChatModeration mute = new ChatModeration(muteId, reason, LocalDateTime.now().plusSeconds(30), LocalDateTime.now());
             moderationRepository.save(mute);
-            messagingTemplate.convertAndSendToUser(userId, "/queue/system", "Inappropriate language detected. You are muted for 30 seconds.");
+            // JSON 형식으로 시스템 메시지 전송
+            String message = String.format("%s으로 30초간 음소거 처리되었습니다. (%d번째 위반)", reason, offenseCount);
+            String muteMessage = String.format("{\"code\": \"MUTED\", \"message\": \"%s\"}", message);
+            messagingTemplate.convertAndSend(String.format("/queue/system-%s", userId), muteMessage);
         }
+        return offenseCount;
     }
 
     private String getRoomIdFromDestination(String destination) {
