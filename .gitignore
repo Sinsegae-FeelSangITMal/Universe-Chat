@@ -1,0 +1,31 @@
+# IDE
+.idea/
+*.iml
+.project
+.classpath
+.settings/
+.sts4/
+
+# Build output
+build/
+target/
+out/
+
+# Gradle
+.gradle/
+
+# Maven
+.m2/
+
+# Logs
+*.log
+hs_err_pid*
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Secrets & sensitive config
+*.jks
+*.pem
+application-local.properties
